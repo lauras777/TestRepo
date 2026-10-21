@@ -12,9 +12,9 @@ concurrency:
 
 env:
   # Set to "true" if this repository contains C or C++ code
-  CPP_REPO: "true"
+  CPP_REPO: "false"
   # Set to "true" for C/C++ repositories that use Conan without a committed conan.lock file
-  CONAN_LOCK: "true"
+  CONAN_LOCK: "false"
   # Snapshot label: unique to this repository. Never rename or reuse it.
   SNAPSHOT_LABEL: test-snapshot-${{ github.event.repository.name }}
 
