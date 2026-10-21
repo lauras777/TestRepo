@@ -1,0 +1,83 @@
+name: Manifest SBOM
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# Never run two uploads for the same repository at the same time
+concurrency:
+  group: manifest-sbom-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  # Set to "true" if this repository contains C or C++ code
+  CPP_REPO: "true"
+  # Set to "true" for C/C++ repositories that use Conan without a committed conan.lock file
+  CONAN_INSTALL: "true"
+  # Snapshot label: unique to this repository. Never rename or reuse it.
+  SNAPSHOT_LABEL: test-snapshot-${{ github.event.repository.name }}
+
+jobs:
+  sbom:
+    # GitHub-hosted: ubuntu-latest. Self-hosted: your runner labels, e.g. [self-hosted, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Remove this step if Conan is preinstalled on your self-hosted runner
+      - name: Install Conan
+        if: env.CONAN_INSTALL == 'true'
+        run: |
+          pipx install conan
+          conan profile detect --force
+
+      # Remove this step if the tools are preinstalled on your self-hosted runner
+      - name: Install Manifest CLI and generators
+        run: |
+          BIN="$RUNNER_TEMP/manifest-bin"
+          mkdir -p "$BIN"
+          curl -sSfL https://raw.githubusercontent.com/manifest-cyber/cli/main/install.sh | sh -s -- -b "$BIN"
+          echo "$BIN" >> "$GITHUB_PATH"
+          "$BIN/manifest-cli" install --generator syft --destination "$BIN"
+          if [ "$CPP_REPO" = "true" ]; then
+            "$BIN/manifest-cli" install --generator csbom --destination "$BIN"
+          fi
+
+      - name: Generate SBOM
+        run: |
+          OUT="$RUNNER_TEMP"
+          if [ "$CPP_REPO" = "true" ]; then
+            # 1. Syft: open source and non-C/C++ dependencies
+            manifest-cli generate . --generator syft --output cyclonedx-json -f "$OUT/sbom-syft"
+            # 2. csbom: Manifest's C/C++ generator
+            if [ "$CONAN_INSTALL" = "true" ]; then
+              # --install lets csbom run Conan to resolve exact dependency versions
+              manifest-cli generate . --generator csbom --output cyclonedx-json -f "$OUT/sbom-csbom" -- --install
+            else
+              manifest-cli generate . --generator csbom --output cyclonedx-json -f "$OUT/sbom-csbom"
+            fi
+            # 3. Merge both into one CycloneDX 1.6 SBOM
+            manifest-cli merge "$OUT/sbom-syft.json" "$OUT/sbom-csbom.json" -o cyclonedx-1.6 -f "$OUT/sbom.json"
+          else
+            manifest-cli generate . --generator syft --output cyclonedx-json -f "$OUT/sbom"
+          fi
+
+      # Test only: keep the intermediate SBOMs so we can inspect them
+      - name: Upload SBOMs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sboms
+          path: ${{ runner.temp }}/sbom*.json
+
+      - name: Publish to Manifest (snapshot mode)
+        env:
+          MANIFEST_API_KEY: ${{ secrets.MANIFEST_API_KEY }}
+        run: |
+          SNAPSHOT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          manifest-cli publish "$RUNNER_TEMP/sbom.json" \
+            --api-key "$MANIFEST_API_KEY" \
+            --name "${{ github.repository }}" \
+            --version "${{ github.sha }}" \
+            --snapshot-label "$SNAPSHOT_LABEL" \
+            --snapshot-timestamp "$SNAPSHOT_TS"
