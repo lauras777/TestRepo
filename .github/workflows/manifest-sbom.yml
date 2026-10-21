@@ -14,7 +14,7 @@ env:
   # Set to "true" if this repository contains C or C++ code
   CPP_REPO: "true"
   # Set to "true" for C/C++ repositories that use Conan without a committed conan.lock file
-  CONAN_INSTALL: "true"
+  CONAN_LOCK: "true"
   # Snapshot label: unique to this repository. Never rename or reuse it.
   SNAPSHOT_LABEL: test-snapshot-${{ github.event.repository.name }}
 
@@ -27,7 +27,7 @@ jobs:
 
       # Remove this step if Conan is preinstalled on your self-hosted runner
       - name: Install Conan
-        if: env.CONAN_INSTALL == 'true'
+        if: env.CONAN_LOCK == 'true'
         run: |
           pipx install conan
           conan profile detect --force
@@ -51,31 +51,21 @@ jobs:
           if [ "$CPP_REPO" = "true" ]; then
             # 1. Syft: open source and non-C/C++ dependencies
             manifest-cli generate . --generator syft --output cyclonedx-json -f "$OUT/sbom-syft"
-            # 2. csbom: Manifest's C/C++ generator
-            if [ "$CONAN_INSTALL" = "true" ]; then
-              # --install lets csbom run Conan to resolve exact dependency versions
-              manifest-cli generate . --generator csbom --output cyclonedx-json -f "$OUT/sbom-csbom" -- --install
-            else
-              manifest-cli generate . --generator csbom --output cyclonedx-json -f "$OUT/sbom-csbom"
+            # 2. Conan projects: create a conan.lock (exact versions, including transitive
+            #    dependencies) next to any conanfile that doesn't already have one
+            if [ "$CONAN_LOCK" = "true" ]; then
+              find . \( -name conanfile.py -o -name conanfile.txt \) -not -path '*/test_package/*' | while read -r f; do
+                d=$(dirname "$f")
+                [ -f "$d/conan.lock" ] || conan lock create "$d"
+              done
             fi
-            # 3. Merge both into one CycloneDX 1.6 SBOM
+            # 3. csbom: Manifest's C/C++ generator
+            manifest-cli generate . --generator csbom --output cyclonedx-json -f "$OUT/sbom-csbom"
+            # 4. Merge both into one CycloneDX 1.6 SBOM
             manifest-cli merge "$OUT/sbom-syft.json" "$OUT/sbom-csbom.json" -o cyclonedx-1.6 -f "$OUT/sbom.json"
           else
             manifest-cli generate . --generator syft --output cyclonedx-json -f "$OUT/sbom"
           fi
-
-      # Test only: run csbom directly to see what --install does vs. a pre-generated conan.lock
-      - name: Debug csbom Conan handling
-        continue-on-error: true
-        run: |
-          which conan cmake csbom
-          conan --version
-          echo "===== A: csbom --install --verbose"
-          csbom conan-sample --install --verbose -f cyclonedx -o "$RUNNER_TEMP/sbom-debug-install.json" 2>&1 | tail -80
-          echo "===== B: conan lock create, then csbom without --install"
-          cp -r conan-sample "$RUNNER_TEMP/conan-sample-lock"
-          (cd "$RUNNER_TEMP/conan-sample-lock" && conan lock create . 2>&1 | tail -20 && ls -la)
-          csbom "$RUNNER_TEMP/conan-sample-lock" --verbose -f cyclonedx -o "$RUNNER_TEMP/sbom-debug-lock.json" 2>&1 | tail -40
 
       # Test only: keep the intermediate SBOMs so we can inspect them
       - name: Upload SBOMs as artifact
