@@ -41,7 +41,8 @@ jobs:
           echo "$BIN" >> "$GITHUB_PATH"
           "$BIN/manifest-cli" install --generator syft --destination "$BIN"
           if [ "$CPP_REPO" = "true" ]; then
-            "$BIN/manifest-cli" install --generator csbom --destination "$BIN"
+            # Test: v1.5.2 Linux build crashes on startup; trying v1.5.1
+            "$BIN/manifest-cli" install --generator csbom --destination "$BIN" --version v1.5.1
           fi
 
       - name: Generate SBOM
