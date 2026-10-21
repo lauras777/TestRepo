@@ -64,6 +64,19 @@ jobs:
             manifest-cli generate . --generator syft --output cyclonedx-json -f "$OUT/sbom"
           fi
 
+      # Test only: run csbom directly to see what --install does vs. a pre-generated conan.lock
+      - name: Debug csbom Conan handling
+        continue-on-error: true
+        run: |
+          which conan cmake csbom
+          conan --version
+          echo "===== A: csbom --install --verbose"
+          csbom conan-sample --install --verbose -f cyclonedx -o "$RUNNER_TEMP/sbom-debug-install.json" 2>&1 | tail -80
+          echo "===== B: conan lock create, then csbom without --install"
+          cp -r conan-sample "$RUNNER_TEMP/conan-sample-lock"
+          (cd "$RUNNER_TEMP/conan-sample-lock" && conan lock create . 2>&1 | tail -20 && ls -la)
+          csbom "$RUNNER_TEMP/conan-sample-lock" --verbose -f cyclonedx -o "$RUNNER_TEMP/sbom-debug-lock.json" 2>&1 | tail -40
+
       # Test only: keep the intermediate SBOMs so we can inspect them
       - name: Upload SBOMs as artifact
         uses: actions/upload-artifact@v4
