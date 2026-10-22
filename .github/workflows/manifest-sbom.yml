@@ -12,9 +12,7 @@ concurrency:
 
 env:
   # Set to "true" if this repository contains C or C++ code
-  CPP_REPO: "false"
-  # Set to "true" for C/C++ repositories that use Conan without a committed conan.lock file
-  CONAN_LOCK: "false"
+  CPP_REPO: "true"
   # Snapshot label: unique to this repository. Never rename or reuse it.
   SNAPSHOT_LABEL: test-snapshot-${{ github.event.repository.name }}
 
@@ -25,13 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Remove this step if Conan is preinstalled on your self-hosted runner
-      - name: Install Conan
-        if: env.CONAN_LOCK == 'true'
-        run: |
-          pipx install conan
-          conan profile detect --force
-
       # Remove this step if the tools are preinstalled on your self-hosted runner
       - name: Install Manifest CLI and generators
         run: |
@@ -41,33 +32,41 @@ jobs:
           echo "$BIN" >> "$GITHUB_PATH"
           "$BIN/manifest-cli" install --generator syft --destination "$BIN"
           if [ "$CPP_REPO" = "true" ]; then
-            # Test: v1.5.2 Linux build crashes on startup; trying v1.5.1
             "$BIN/manifest-cli" install --generator csbom --destination "$BIN" --version v1.5.1
           fi
 
       - name: Generate SBOM
         run: |
           OUT="$RUNNER_TEMP"
-          if [ "$CPP_REPO" = "true" ]; then
-            # 1. Syft: open source and non-C/C++ dependencies
-            manifest-cli generate . --generator syft --output cyclonedx-json -f "$OUT/sbom-syft"
-            # 2. Conan projects: create a conan.lock (exact versions, including transitive
-            #    dependencies) next to any conanfile that doesn't already have one
-            if [ "$CONAN_LOCK" = "true" ]; then
-              find . \( -name conanfile.py -o -name conanfile.txt \) -not -path '*/test_package/*' | while read -r f; do
-                d=$(dirname "$f")
-                [ -f "$d/conan.lock" ] || conan lock create "$d"
-              done
-            fi
-            # 3. csbom: Manifest's C/C++ generator
-            manifest-cli generate . --generator csbom --output cyclonedx-json -f "$OUT/sbom-csbom"
-            # 4. Merge both into one CycloneDX 1.6 SBOM
-            manifest-cli merge "$OUT/sbom-syft.json" "$OUT/sbom-csbom.json" -o cyclonedx-1.6 -f "$OUT/sbom.json"
-          else
+          if [ "$CPP_REPO" != "true" ]; then
             manifest-cli generate . --generator syft --output cyclonedx-json -f "$OUT/sbom"
+            exit 0
           fi
 
-      # Test only: keep the intermediate SBOMs so we can inspect them
+          # 1. Syft: non-C/C++ dependencies (Conan files are left to csbom to avoid duplicates)
+          manifest-cli generate . --generator syft --output cyclonedx-json -f "$OUT/sbom-syft" \
+            --exclude '**/conan.lock' --exclude '**/conanfile.txt'
+
+          # 2. Conan: csbom needs a conan.lock to capture exact versions, including transitive
+          #    dependencies. Create one next to any conanfile that doesn't already have one.
+          NEED_LOCK=$(find . \( -name conanfile.py -o -name conanfile.txt \) -not -path '*/test_package/*' \
+            -exec sh -c '[ -f "$(dirname "$1")/conan.lock" ] || dirname "$1"' _ {} \; | sort -u)
+          if [ -n "$NEED_LOCK" ]; then
+            command -v conan >/dev/null || { pipx install conan && conan profile detect --force; }
+            for d in $NEED_LOCK; do
+              if ! conan lock create "$d"; then
+                echo "::warning title=Incomplete C/C++ SBOM::Could not create conan.lock in $d. Conan dependencies there may be missing from the SBOM. Commit a conan.lock or check Conan access."
+              fi
+            done
+          fi
+
+          # 3. csbom: Manifest's C/C++ generator
+          manifest-cli generate . --generator csbom --output cyclonedx-json -f "$OUT/sbom-csbom"
+
+          # 4. Merge both into one CycloneDX 1.6 SBOM
+          manifest-cli merge "$OUT/sbom-syft.json" "$OUT/sbom-csbom.json" -o cyclonedx-1.6 -f "$OUT/sbom.json"
+
+      # Test only: keep the SBOMs so we can inspect them
       - name: Upload SBOMs as artifact
         uses: actions/upload-artifact@v4
         with:
