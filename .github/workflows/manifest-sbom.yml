@@ -21,7 +21,7 @@ jobs:
     # GitHub-hosted: ubuntu-latest. Self-hosted: your runner labels, e.g. [self-hosted, linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Remove this step if the tools are preinstalled on your self-hosted runner
       - name: Install Manifest CLI and generators
